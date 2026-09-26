@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import dataset as ds                                   # noqa: E402
-from degrade import DegradeConfig                      # noqa: E402
+from degrade import DegradeConfig, SensorDegrader      # noqa: E402
 from detect import DetectorConfig, detect              # noqa: E402
 from fusion import late_fuse                           # noqa: E402
 from metrics import detection_scores, track_stability  # noqa: E402
@@ -52,17 +52,29 @@ def default_conditions() -> List[Condition]:
     return conds
 
 
-def build_cache(seq, cfg_eo, cfg_ir, stride, limit, cache_path: Path) -> Dict:
+def build_cache(seq, cfg_eo, cfg_ir, stride, limit, cache_path: Path,
+                ir_noise: float = 0.0, ir_blur: int = 0) -> Dict:
     if cache_path.is_file():
         blob = np.load(cache_path, allow_pickle=True)
         return {k: blob[k] for k in blob.files}
 
+    # 잡음·흐림은 이미지 자체를 바꾸므로 결과 수준에서 흉내 낼 수 없고 재탐지가 필요하다.
+    # 그래서 캐시 단계에서 적용하고, 캐시 파일 이름으로 조건을 구분한다.
+    deg = None
+    if ir_noise > 0 or ir_blur >= 3:
+        deg = SensorDegrader(DegradeConfig(noise_sigma=ir_noise, blur_ksize=ir_blur))
+
     eo_dets, ir_dets, gts, lat_eo, lat_ir = [], [], [], [], []
     for item in ds.iterate(seq, stride=stride, limit=limit):
+        ir_img = item["ir"]
+        if deg is not None:
+            ir_img = deg(ir_img)
+            if ir_img is None:
+                ir_img = item["ir"]
         t0 = time.perf_counter()
         d_eo = detect(item["eo"], cfg_eo)
         t1 = time.perf_counter()
-        d_ir = detect(item["ir"], cfg_ir)
+        d_ir = detect(ir_img, cfg_ir)
         t2 = time.perf_counter()
         eo_dets.append(d_eo)
         ir_dets.append(d_ir)
@@ -181,6 +193,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=300, help="시퀀스당 사용할 프레임 수")
     ap.add_argument("--stride", type=int, default=2)
     ap.add_argument("--max-seq", type=int, default=4)
+    ap.add_argument("--sets", default=None,
+                    help="쓸 세트를 콤마로 지정 (예: set00,set04). 생략하면 전체")
+    ap.add_argument("--balanced", action="store_true",
+                    help="주간·야간에서 번갈아 뽑는다. 앞에서부터 자르면 한쪽만 들어간다")
     ap.add_argument("--weights", default="yolo11n.pt")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.15)
@@ -192,6 +208,10 @@ def main() -> int:
     ap.add_argument("--trk-low", type=float, default=None)
     ap.add_argument("--op-conf", type=float, default=0.10,
                     help="운용 임계값. AP는 낮은 conf까지 쓰지만 정밀도는 이 값에서 본다")
+    ap.add_argument("--ir-noise", type=float, default=0.0,
+                    help="IR에 가우시안 잡음 주입(표준편차 0~255). 재탐지가 필요하다")
+    ap.add_argument("--ir-blur", type=int, default=0,
+                    help="IR에 가우시안 흐림 커널(홀수). 재탐지가 필요하다")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
@@ -206,8 +226,29 @@ def main() -> int:
     if not seqs:
         print("[!] visible/lwir 쌍을 찾지 못했습니다: %s" % args.data)
         return 1
-    seqs = seqs[: args.max_seq]
-    print("시퀀스 %d개: %s" % (len(seqs), ", ".join("%s(%d)" % (s.name, len(s)) for s in seqs)))
+    if args.sets:
+        want = {s.strip() for s in args.sets.split(",")}
+        seqs = [s for s in seqs if s.name.split("/")[0] in want]
+
+    if args.balanced:
+        # 앞에서부터 자르면 set00~ 만 들어가 주간만 남는다. 주·야를 번갈아 뽑는다.
+        day = [s for s in seqs if ds.time_of_day(s.name) == "day"]
+        night = [s for s in seqs if ds.time_of_day(s.name) == "night"]
+        mixed = []
+        while (day or night) and len(mixed) < args.max_seq:
+            if day:
+                mixed.append(day.pop(0))
+            if night and len(mixed) < args.max_seq:
+                mixed.append(night.pop(0))
+        seqs = mixed
+    else:
+        seqs = seqs[: args.max_seq]
+
+    if not seqs:
+        print("[!] 조건에 맞는 시퀀스가 없습니다")
+        return 1
+    print("시퀀스 %d개: %s" % (len(seqs),
+          ", ".join("%s[%s](%d)" % (s.name, ds.time_of_day(s.name), len(s)) for s in seqs)))
 
     cfg_eo = DetectorConfig(weights=args.weights, imgsz=args.imgsz, conf=args.conf,
                             preprocess="none", device=args.device)
@@ -221,8 +262,14 @@ def main() -> int:
     for seq in seqs:
         key = seq.name.replace("/", "_")
         t0 = time.perf_counter()
+        suffix = ""
+        if args.ir_noise > 0:
+            suffix += "_n%g" % args.ir_noise
+        if args.ir_blur >= 3:
+            suffix += "_b%d" % args.ir_blur
         cache = build_cache(seq, cfg_eo, cfg_ir, args.stride, args.limit,
-                            out_dir / "cache" / (key + ".npz"))
+                            out_dir / "cache" / (key + suffix + ".npz"),
+                            args.ir_noise, args.ir_blur)
         print("  [%s] 프레임 %d개, 캐시 %.1fs" % (seq.name, len(cache["gt"]), time.perf_counter() - t0))
         for cond in default_conditions():
             r = run_condition(cache, cond, args.fuse_iou, args.w_rgb,
