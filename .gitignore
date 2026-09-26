@@ -1,0 +1,12 @@
+data/
+.venv/
+.venv-gpu/
+__pycache__/
+*.pyc
+*.pt
+*.onnx
+results/**/cache/
+results/smoke/
+results/diag/
+results/**/*.mp4
+.DS_Store

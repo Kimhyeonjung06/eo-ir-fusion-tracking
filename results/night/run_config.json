@@ -1,0 +1,17 @@
+{
+  "data": "data/kaist_preview",
+  "limit": 600,
+  "stride": 2,
+  "max_seq": 4,
+  "weights": "C:/Users/a9016/Desktop/취업프로젝트/portfolio/realtime-object-detection-tracking-app/yolo11n.pt",
+  "imgsz": 1280,
+  "conf": 0.01,
+  "ir_preprocess": "clahe",
+  "fuse_iou": 0.4,
+  "w_rgb": 0.5,
+  "trk_high": null,
+  "trk_low": null,
+  "op_conf": 0.1,
+  "device": "cpu",
+  "out": "results/night"
+}
