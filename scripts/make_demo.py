@@ -44,9 +44,25 @@ def main() -> int:
     ap.add_argument("--conf", type=float, default=0.10)
     ap.add_argument("--n", type=int, default=3)
     ap.add_argument("--out", default="results/night")
+    ap.add_argument("--seq", default=None,
+                    help="시퀀스 이름 (예: set03/V000). 생략하면 정답이 가장 많은 시퀀스")
+    ap.add_argument("--name", default="demo_eo_ir_fusion.jpg")
     args = ap.parse_args()
 
-    seq = ds.discover(args.data)[0]
+    seqs = ds.discover(args.data)
+    if args.seq:
+        match = [s for s in seqs if s.name == args.seq]
+        if not match:
+            print("[!] 시퀀스를 찾지 못했습니다:", args.seq)
+            return 1
+        seq = match[0]
+    else:
+        # 첫 시퀀스는 사람이 한 명도 없을 수 있다(set00/V000). 정답이 많은 쪽을 고른다.
+        def density(s):
+            probe = s.frames[:150]
+            return sum(len(ds.load_annotation(s.ann_dir, Path(f).stem)[0]) for f in probe)
+        seq = max(seqs, key=density)
+    print("시퀀스:", seq.name, "(%s)" % ds.time_of_day(seq.name))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -87,7 +103,7 @@ def main() -> int:
         return 1
 
     grid = np.vstack(panels)
-    path = out / "demo_eo_ir_fusion.jpg"
+    path = out / args.name
     cv2.imwrite(str(path), grid, [cv2.IMWRITE_JPEG_QUALITY, 88])
     print("저장:", path, grid.shape)
     return 0

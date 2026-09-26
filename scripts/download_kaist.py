@@ -20,20 +20,33 @@ FULL_ID = "1sBcAmFqNJmNMBZdMtKmO2X4BRjKPyKMc"      # 약 36GB
 
 
 def sniff(path: Path) -> str:
+    """배포 파일의 확장자가 실제 형식과 다르다.
+
+    프리뷰(.zip 안내)는 gzip 압축 tar이고, 전체 배포본은 비압축 tar이다.
+    확장자를 믿지 않고 매직 바이트로 판별한다.
+    """
     with path.open("rb") as f:
         head = f.read(4)
+        f.seek(257)
+        ustar = f.read(5)
     if head[:2] == b"\x1f\x8b":
         return "tar.gz"
     if head[:2] == b"PK":
         return "zip"
+    if ustar in (b"ustar", b"ustar"[:5]):
+        return "tar"
+    if tarfile.is_tarfile(path):
+        return "tar"
     return "unknown"
 
 
 def extract(archive: Path, target: Path) -> None:
     kind = sniff(archive)
     target.mkdir(parents=True, exist_ok=True)
-    if kind == "tar.gz":
-        with tarfile.open(archive, "r:gz") as tf:
+    print("형식 판별:", kind)
+    if kind in ("tar.gz", "tar"):
+        mode = "r:gz" if kind == "tar.gz" else "r:"
+        with tarfile.open(archive, mode) as tf:
             tf.extractall(target)
     elif kind == "zip":
         with zipfile.ZipFile(archive) as zf:

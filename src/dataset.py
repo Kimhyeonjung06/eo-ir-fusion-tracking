@@ -11,6 +11,7 @@ macOS 메타파일(._*)은 제외한다.
 """
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,20 +42,29 @@ class Sequence:
         return len(self.frames)
 
 
-def _find_ann_dir(seq_dir: Path, root: Path) -> Optional[Path]:
-    """images/setXX/VYYY -> annotations*/setXX/VYYY"""
-    rel = seq_dir.parts[-2:]
-    for cand in root.rglob("*"):
-        if not cand.is_dir() or cand.parts[-2:] != rel:
-            continue
-        low = str(cand).lower()
-        if "annotation" in low and "image" not in cand.parts[-3].lower():
-            return cand
-    return None
+def find_ann_roots(root: Path) -> List[Path]:
+    """주석 루트 폴더들을 한 번만 찾는다.
+
+    전체 배포본에는 annotations-xml-new와 annotations-xml-new-sanitized가 함께 들어 있다.
+    정제본(sanitized)이 라벨 품질이 좋으므로 우선한다.
+    시퀀스마다 전체를 훑으면 19만 개 파일을 41번 순회하게 되므로 여기서 한 번만 수집하고,
+    이미지 폴더로는 내려가지 않는다.
+    """
+    roots: List[Path] = []
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in {"visible", "lwir"} and not d.startswith("._")]
+        for d in list(dirnames):
+            if "annotation" in d.lower():
+                roots.append(Path(dirpath) / d)
+                dirnames.remove(d)      # 그 아래로는 내려갈 필요가 없다
+    roots.sort(key=lambda p: (0 if "sanitized" in p.name.lower() else 1, len(str(p))))
+    return roots
 
 
 def discover(root: str | Path) -> List[Sequence]:
     root = Path(root)
+    ann_roots = find_ann_roots(root)
     seqs: List[Sequence] = []
     for vis in sorted(root.rglob("visible")):
         if not vis.is_dir():
@@ -67,8 +77,14 @@ def discover(root: str | Path) -> List[Sequence]:
         if not frames:
             continue
         seq_dir = vis.parent
-        name = "/".join(seq_dir.parts[-2:])
-        seqs.append(Sequence(name, vis, lwir, _find_ann_dir(seq_dir, root), frames))
+        set_name, vid_name = seq_dir.parts[-2:]
+        ann_dir = None
+        for ar in ann_roots:
+            cand = ar / set_name / vid_name
+            if cand.is_dir():
+                ann_dir = cand
+                break
+        seqs.append(Sequence("%s/%s" % (set_name, vid_name), vis, lwir, ann_dir, frames))
     return seqs
 
 

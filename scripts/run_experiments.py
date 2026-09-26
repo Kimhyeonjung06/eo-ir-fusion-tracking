@@ -197,6 +197,8 @@ def main() -> int:
                     help="쓸 세트를 콤마로 지정 (예: set00,set04). 생략하면 전체")
     ap.add_argument("--balanced", action="store_true",
                     help="주간·야간에서 번갈아 뽑는다. 앞에서부터 자르면 한쪽만 들어간다")
+    ap.add_argument("--dense", action="store_true",
+                    help="정답이 실제로 나오는 시퀀스를 우선한다. 빈 영상으로 실험하는 것을 막는다")
     ap.add_argument("--weights", default="yolo11n.pt")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.15)
@@ -229,6 +231,23 @@ def main() -> int:
     if args.sets:
         want = {s.strip() for s in args.sets.split(",")}
         seqs = [s for s in seqs if s.name.split("/")[0] in want]
+
+    if args.dense:
+        # 앞에서부터 뽑으면 사람이 한 명도 안 나오는 시퀀스가 걸린다(set00/V000이 그렇다).
+        # 앞 200프레임의 정답 밀도를 재서 높은 순으로 정렬한다.
+        def density(s) -> float:
+            n = 0
+            probe = s.frames[:200]
+            for f in probe:
+                gt, _ = ds.load_annotation(s.ann_dir, Path(f).stem)
+                n += len(gt)
+            return n / max(len(probe), 1)
+
+        scored = [(density(s), s) for s in seqs]
+        scored.sort(key=lambda x: -x[0])
+        seqs = [s for d, s in scored if d > 0.1]
+        print("정답 밀도 상위: " + ", ".join("%s(%.2f)" % (s.name, d)
+                                             for d, s in scored[:6]))
 
     if args.balanced:
         # 앞에서부터 자르면 set00~ 만 들어가 주간만 남는다. 주·야를 번갈아 뽑는다.

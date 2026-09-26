@@ -1,8 +1,11 @@
 {
-  "data": "data/kaist_preview",
-  "limit": 0,
+  "data": "data/kaist_full",
+  "limit": 1200,
   "stride": 1,
-  "max_seq": 4,
+  "max_seq": 6,
+  "sets": null,
+  "balanced": true,
+  "dense": true,
   "weights": "C:/Users/a9016/Desktop/취업프로젝트/portfolio/realtime-object-detection-tracking-app/yolo11n.pt",
   "imgsz": 1280,
   "conf": 0.01,
@@ -12,6 +15,8 @@
   "trk_high": null,
   "trk_low": null,
   "op_conf": 0.1,
+  "ir_noise": 0.0,
+  "ir_blur": 0,
   "device": "0",
-  "out": "results/night_full"
+  "out": "results/full"
 }
