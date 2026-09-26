@@ -32,6 +32,8 @@ import dataset as ds                                   # noqa: E402
 from degrade import DegradeConfig, SensorDegrader      # noqa: E402
 from detect import DetectorConfig, detect              # noqa: E402
 from fusion import late_fuse                           # noqa: E402
+from health import (LagMonitor, SensorHealth,          # noqa: E402
+                    decide, PolicyConfig)
 from metrics import detection_scores, track_stability  # noqa: E402
 from track import ByteLikeTracker                      # noqa: E402
 
@@ -43,20 +45,26 @@ class Condition:
     use_ir: bool = True
     eo_degrade: Optional[Dict] = None
     ir_degrade: Optional[Dict] = None
+    adaptive: bool = False
 
 
 def default_conditions() -> List[Condition]:
+    """고정 융합과 적응형 융합을 같은 열화 조건에서 나란히 측정한다."""
     conds = [
         Condition("EO_only", use_ir=False),
         Condition("IR_only", use_eo=False),
         Condition("Fusion"),
+        Condition("Adaptive", adaptive=True),
     ]
     for r in (0.1, 0.3, 0.5, 0.7):
         pct = int(r * 100)
         conds.append(Condition("Fusion_IRdrop%d" % pct, ir_degrade={"dropout": r}))
+        conds.append(Condition("Adaptive_IRdrop%d" % pct, ir_degrade={"dropout": r}, adaptive=True))
         conds.append(Condition("Fusion_EOdrop%d" % pct, eo_degrade={"dropout": r}))
+        conds.append(Condition("Adaptive_EOdrop%d" % pct, eo_degrade={"dropout": r}, adaptive=True))
     for d in (1, 2, 5):
         conds.append(Condition("Fusion_IRdelay%d" % d, ir_degrade={"delay_frames": d}))
+        conds.append(Condition("Adaptive_IRdelay%d" % d, ir_degrade={"delay_frames": d}, adaptive=True))
     return conds
 
 
@@ -133,6 +141,13 @@ def as_xyxyc(arr) -> np.ndarray:
     return a.reshape(-1, a.shape[-1])[:, :5]
 
 
+def as_single(d: np.ndarray, src: int) -> np.ndarray:
+    """단일 모달 탐지를 융합 출력 형식(마지막 열이 출처)으로 맞춘다."""
+    if d is None or len(d) == 0:
+        return np.zeros((0, 6), np.float32)
+    return np.hstack([d, np.full((len(d), 1), float(src), np.float32)])
+
+
 def run_condition(cache: Dict, cond: Condition, fuse_iou: float, w_rgb: float,
                   trk_high: float = 0.5, trk_low: float = 0.1,
                   op_conf: float = 0.10) -> Dict:
@@ -148,6 +163,11 @@ def run_condition(cache: Dict, cond: Condition, fuse_iou: float, w_rgb: float,
     tracker = ByteLikeTracker(high_thresh=trk_high, low_thresh=trk_low)
     preds, log = [], []
     n_eo_lost = n_ir_lost = 0
+    h_eo, h_ir = SensorHealth(), SensorHealth()
+    lag = LagMonitor()
+    policy = PolicyConfig()
+    modes = {"fuse": 0, "eo_only": 0, "ir_only": 0, "none": 0}
+    w_ir_log: List[float] = []
 
     for i in range(len(gt)):
         a, b = eo_s[i], ir_s[i]
@@ -156,14 +176,33 @@ def run_condition(cache: Dict, cond: Condition, fuse_iou: float, w_rgb: float,
         if b is None:
             n_ir_lost += 1
 
-        if a is not None and b is not None:
+        if cond.adaptive:
+            # 관측을 반영하기 전의 트랙 예측이 현재 시점의 기준 위치다.
+            # 실제로 어느 쪽을 썼는지와 무관하게 두 모달 모두 재야 복귀 근거가 남는다.
+            lag.update(tracker.tracks, a, b)
+            h_eo.update(a)
+            h_ir.update(b)
+            dec = decide(h_eo, h_ir, lag, policy)
+            modes[dec.mode] += 1
+            w_ir_log.append(dec.w_ir)
+            if dec.mode == "none":
+                fused = np.zeros((0, 6), np.float32)
+            elif dec.mode == "ir_only":
+                fused = as_single(b, 1)
+            elif dec.mode == "eo_only":
+                fused = as_single(a, 0)
+            elif a is not None and b is not None:
+                fused = late_fuse(a, b, iou_thresh=fuse_iou, w_rgb=dec.w_eo)
+            else:
+                # 융합하기로 했는데 한쪽 프레임이 비었다. 있는 쪽을 그대로 쓴다.
+                # 여기서 빈 출력을 내면 멀쩡한 관측을 버리게 된다.
+                fused = as_single(a, 0) if a is not None else as_single(b, 1)
+        elif a is not None and b is not None:
             fused = late_fuse(a, b, iou_thresh=fuse_iou, w_rgb=w_rgb)
         elif a is not None:
-            fused = (np.hstack([a, np.zeros((len(a), 1), np.float32)])
-                     if len(a) else np.zeros((0, 6), np.float32))
+            fused = as_single(a, 0)
         elif b is not None:
-            fused = (np.hstack([b, np.ones((len(b), 1), np.float32)])
-                     if len(b) else np.zeros((0, 6), np.float32))
+            fused = as_single(b, 1)
         else:
             fused = np.zeros((0, 6), np.float32)
 
@@ -189,6 +228,12 @@ def run_condition(cache: Dict, cond: Condition, fuse_iou: float, w_rgb: float,
         row[k] = round(v, 3) if isinstance(v, float) else v
     row["eo_lost_frames"] = n_eo_lost
     row["ir_lost_frames"] = n_ir_lost
+    if cond.adaptive:
+        # 어떤 판단을 얼마나 내렸는지. 정책이 실제로 작동했는지 확인하는 근거다.
+        n = max(sum(modes.values()), 1)
+        for k, v in modes.items():
+            row["mode_" + k] = round(v / n, 3)
+        row["mean_w_ir"] = round(float(np.mean(w_ir_log)), 3) if w_ir_log else 0.0
     row["lat_p50_ms"] = round(float(np.percentile(lat, 50)), 2)
     row["lat_p95_ms"] = round(float(np.percentile(lat, 95)), 2)
     row["lat_max_ms"] = round(float(np.max(lat)), 2)

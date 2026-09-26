@@ -100,6 +100,71 @@ a different intensity distribution.
 
 ---
 
+## Adaptive fusion: weighting by sensor state
+
+Fixed fusion assumes both sensors are healthy. A policy layer estimates sensor state per frame
+and adjusts the fusion weights instead.
+
+**Signals** — availability (observations arriving), quality (recent detection confidence),
+and agreement (fraction of detections consistent with established tracks).
+Low agreement means a sensor is producing false positives, which is the failure mode that
+costs fusion its precision.
+
+**Action** — weights shift continuously rather than switching. A sensor's unmatched
+detections are penalised in proportion to its weight, so down-weighting actually suppresses
+that sensor's false positives rather than only nudging box coordinates.
+
+| Baseline condition | Precision | Recall | F1 | Tracks |
+|---|---:|---:|---:|---:|
+| Fixed fusion | 0.361 | **0.919** | 0.512 | 350 |
+| **Adaptive** | **0.398** | 0.903 | **0.545** | **321** |
+| IR only | 0.568 | 0.874 | **0.683** | 164 |
+
+Operating F1 improves in every degraded condition:
+
+| Condition | Fixed F1 | Adaptive F1 | |
+|---|---:|---:|---:|
+| IR dropout 10% | 0.515 | 0.550 | +6.8% |
+| IR dropout 30% | 0.524 | 0.553 | +5.5% |
+| IR dropout 70% | 0.542 | 0.555 | +2.4% |
+| EO dropout 30% | 0.550 | 0.589 | +7.1% |
+| EO dropout 70% | 0.616 | 0.642 | +4.2% |
+| IR delay 1 frame | 0.504 | 0.544 | +7.9% |
+| IR delay 5 frames | 0.458 | 0.493 | +7.6% |
+
+Mean IR weight tracks the conditions: 0.51 at baseline, 0.32 under IR dropout,
+0.70 under EO dropout.
+
+**Two honest limits.**
+
+AP@0.5 drops about 2% (0.822 → 0.806). The policy trades recall for precision.
+That is the right trade for a system running at a fixed operating threshold, but it is a trade.
+
+**Adaptive fusion still loses to IR alone** (F1 0.545 vs 0.683). On this data, using the single
+best sensor beats any fusion strategy tested here. The policy narrows the gap that fixed
+fusion opens; it does not close it.
+
+### What the policy could not detect
+
+Delay estimation failed. The intended signal was the displacement of IR boxes against EO boxes
+projected onto track velocity, which should read directly as frames of lag.
+
+| True delay | Estimated |
+|---:|---:|
+| 0 frames | −0.62 |
+| 2 frames | −0.69 |
+| 5 frames | −1.29 |
+
+Direction is right, magnitude is off by 4×, and the interquartile range spans ±2 frames.
+At 20 Hz with slow-moving pedestrians, five frames is a few pixels — enough to push a
+30×70 box below IoU 0.5 and destroy AP, but too small to estimate reliably from box positions.
+**Evaluation is more sensitive to this failure than any state estimate built from the same boxes.**
+
+Gains under delay therefore come from the agreement signal suppressing false positives,
+not from detecting the delay itself.
+
+---
+
 ## Corrections
 
 Three conclusions were overturned by re-measuring under stricter conditions. All are kept in

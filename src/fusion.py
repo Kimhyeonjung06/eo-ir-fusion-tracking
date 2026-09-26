@@ -67,7 +67,8 @@ def late_fuse(
     w_rgb: float = 0.5,
     keep_unmatched: bool = True,
     unmatched_penalty: float = 0.9,
-) -> np.ndarray:
+    return_stats: bool = False,
+):
     """두 모달리티 탐지 결과를 합친다.
 
     det_*: (N,5) = [x1, y1, x2, y2, conf]
@@ -93,10 +94,21 @@ def late_fuse(
         conf = 1.0 - (1.0 - cr) * (1.0 - ci)
         out.append([*box, conf, 2])
     if keep_unmatched:
+        # 짝이 없는 박스는 한 센서만 본 것이다. 융합의 오탐은 대부분 여기서 나온다.
+        # 비중이 낮은 센서일수록 더 세게 감점해야 가중치 조정이 정밀도에 실제로 반영된다.
+        pen_rgb = unmatched_penalty * min(2.0 * w_rgb, 1.0)
+        pen_ir = unmatched_penalty * min(2.0 * (1.0 - w_rgb), 1.0)
         for i in u_rgb:
-            out.append([*det_rgb[i, :4], det_rgb[i, 4] * unmatched_penalty, 0])
+            out.append([*det_rgb[i, :4], det_rgb[i, 4] * pen_rgb, 0])
         for j in u_ir:
-            out.append([*det_ir[j, :4], det_ir[j, 4] * unmatched_penalty, 1])
-    if not out:
-        return np.zeros((0, 6), dtype=np.float32)
-    return np.asarray(out, dtype=np.float32)
+            out.append([*det_ir[j, :4], det_ir[j, 4] * pen_ir, 1])
+    fused = (np.asarray(out, dtype=np.float32) if out
+             else np.zeros((0, 6), dtype=np.float32))
+    if not return_stats:
+        return fused
+
+    # 짝지어진 박스들이 실제로 얼마나 겹쳤는지. 두 모달이 같은 자리를 보고 있는지의 척도다.
+    mean_iou = float(np.mean([ious[i, j] for i, j in matches])) if matches else 0.0
+    stats = {"n_match": len(matches), "mean_iou": mean_iou,
+             "n_eo": len(det_rgb), "n_ir": len(det_ir)}
+    return fused, stats
