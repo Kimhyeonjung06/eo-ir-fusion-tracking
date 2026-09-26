@@ -83,6 +83,19 @@ COCO 모델에서는 이 차이가 더 극단적이었다(트랙 길이 21.0 →
 
 ![저하 곡선](results/full/fig2_degradation.png)
 
+### 눈으로 보면
+
+야간 시퀀스에서 **IR을 중간에 끊었다.** 왼쪽 EO, 가운데 IR, 오른쪽이 융합과 추적이다.
+
+![센서 결손 구간의 추적](results/video/night_sensor_cut.gif)
+
+열화상이 끊기는 동안에도 **트랙 번호가 유지된다.** 관측이 사라진 프레임에서는 직전 속도로 위치를
+예측해 트랙을 살려 두고, 신호가 돌아오면 같은 번호로 다시 붙인다.
+끊긴 구간이 길어지면 트랙이 끊기고, 그때 평균 트랙 길이가 짧아진다.
+
+> 전체 영상(25초, 주간·야간)은 `results/video/`에 있다. 용량이 커서 저장소에는 올리지 않는다.
+> `scripts/make_video.py`로 다시 만들 수 있다.
+
 ---
 
 ## 틀렸다가 바로잡은 것 셋
@@ -245,6 +258,13 @@ python scripts/run_experiments.py \
 # 표와 그래프
 python scripts/make_report.py --results results/finetuned/results.csv --out results/finetuned
 python scripts/make_compare.py
+
+# 추적 영상 — 180~300 프레임 구간에서 IR을 끊는다
+python scripts/make_video.py --data data/kaist_full --seq set03/V000 \
+  --weights-eo runs/finetune/visible/weights/best.pt \
+  --weights-ir runs/finetune/lwir/weights/best.pt \
+  --conf 0.25 --start 60 --frames 500 --cut 180:300 \
+  --device 0 --out results/video/night_tracking.mp4
 ```
 
 ---
