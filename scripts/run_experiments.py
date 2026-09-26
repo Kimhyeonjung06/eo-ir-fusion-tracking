@@ -17,6 +17,14 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+# Windows 콘솔은 기본이 cp949라 em dash 같은 문자 하나에 UnicodeEncodeError로 죽는다.
+# 실험이 통째로 날아가는 것을 막기 위해 출력 인코딩을 고정한다.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -200,6 +208,9 @@ def main() -> int:
     ap.add_argument("--dense", action="store_true",
                     help="정답이 실제로 나오는 시퀀스를 우선한다. 빈 영상으로 실험하는 것을 막는다")
     ap.add_argument("--weights", default="yolo11n.pt")
+    ap.add_argument("--weights-eo", default=None,
+                    help="EO 전용 가중치. 미세조정하면 모달별로 다른 모델을 쓴다")
+    ap.add_argument("--weights-ir", default=None, help="IR 전용 가중치")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.15)
     ap.add_argument("--ir-preprocess", default="clahe", choices=["none", "gray", "clahe"])
@@ -269,9 +280,13 @@ def main() -> int:
     print("시퀀스 %d개: %s" % (len(seqs),
           ", ".join("%s[%s](%d)" % (s.name, ds.time_of_day(s.name), len(s)) for s in seqs)))
 
-    cfg_eo = DetectorConfig(weights=args.weights, imgsz=args.imgsz, conf=args.conf,
+    w_eo = args.weights_eo or args.weights
+    w_ir = args.weights_ir or args.weights
+    if w_eo != w_ir:
+        print("가중치 분리 / EO: %s / IR: %s" % (w_eo, w_ir))
+    cfg_eo = DetectorConfig(weights=w_eo, imgsz=args.imgsz, conf=args.conf,
                             preprocess="none", device=args.device)
-    cfg_ir = DetectorConfig(weights=args.weights, imgsz=args.imgsz, conf=args.conf,
+    cfg_ir = DetectorConfig(weights=w_ir, imgsz=args.imgsz, conf=args.conf,
                             preprocess=args.ir_preprocess, device=args.device)
 
     out_dir = Path(args.out)

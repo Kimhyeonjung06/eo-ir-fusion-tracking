@@ -1,6 +1,7 @@
 data/
 .venv/
 .venv-gpu/
+runs/
 __pycache__/
 *.pyc
 *.pt

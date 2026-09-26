@@ -22,12 +22,18 @@ def main() -> int:
     ap.add_argument("--project", default="runs/finetune")
     ap.add_argument("--name", required=True, help="예: lwir, visible")
     ap.add_argument("--patience", type=int, default=10)
+    ap.add_argument("--workers", type=int, default=0,
+                    help="Windows에서 워커를 늘리면 pinned memory 스레드가 "
+                         "CUDA error: resource already mapped 로 죽는다. 기본 0")
     args = ap.parse_args()
 
     from ultralytics import YOLO
 
-    print("미세조정 시작: %s  (data=%s, imgsz=%d, batch=%d, device=%s)"
-          % (args.name, args.data, args.imgsz, args.batch, args.device))
+    # project가 상대경로면 ultralytics의 runs_dir 아래로 한 번 더 들어가 경로가 중첩된다
+    project = Path(args.project).resolve()
+
+    print("미세조정 시작: %s  (data=%s, imgsz=%d, batch=%d, device=%s, workers=%d)"
+          % (args.name, args.data, args.imgsz, args.batch, args.device, args.workers))
     t0 = time.perf_counter()
 
     model = YOLO(args.weights)
@@ -37,9 +43,10 @@ def main() -> int:
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
-        project=args.project,
+        project=str(project),
         name=args.name,
         patience=args.patience,
+        workers=args.workers,
         exist_ok=True,
         # 열화상은 색 정보가 없으므로 색 증강은 의미가 없고 오히려 해롭다
         hsv_h=0.0, hsv_s=0.0, hsv_v=0.3,
@@ -49,7 +56,7 @@ def main() -> int:
         verbose=True,
     )
 
-    best = Path(args.project) / args.name / "weights" / "best.pt"
+    best = project / args.name / "weights" / "best.pt"
     print("\n완료 %.1f분 -> %s" % ((time.perf_counter() - t0) / 60.0, best))
     return 0
 
